@@ -282,10 +282,30 @@ const SEED = {"v":1,"exercises":[{"id":"e_sentadilla","name":"Sentadilla","group
 const KEY = 'cuaderno-hierro.v1';
 const GROUPS = ['Piernas','Posterior y glúteos','Pecho','Espalda','Hombros','Bíceps','Tríceps','Core'];
 let S;
-function load(){ try{ const r=localStorage.getItem(KEY); if(r){ const o=JSON.parse(r); if(o&&o.logs&&o.exercises&&o.plan) return o; } }catch(e){} return null; }
+function load(){ try{ const r=localStorage.getItem(KEY); if(r){ const o=JSON.parse(r); if(o&&o.logs&&o.exercises&&(o.plans||o.plan)) return o; } }catch(e){} return null; }
 function save(){ try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} }
 const clone = o => JSON.parse(JSON.stringify(o));
-S = load() || clone(SEED);
+const LIB_NUEVA=[['Fondos','Tríceps'],['Clean squat','Piernas'],['Sentadilla con pausa','Piernas'],['Remo caballo','Espalda'],['Dominada neutra','Espalda'],['Bench inclinado cerrado','Pecho']];
+function slugId(n){ return 'e_'+n.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,''); }
+function migrate(o){
+  if(o.plan && !o.plans){ o.plans=[{id:1,name:'Plan 1',days:o.plan.days}]; o.active=1; }
+  delete o.plan;
+  if(!o.v || o.v<2){
+    const mx=Math.max(0,...o.plans.flatMap(p=>p.days.map(d=>d.id)));
+    const pid=Math.max(0,...o.plans.map(p=>p.id))+1;
+    o.plans.push({id:pid,name:'Plan 2',days:[1,2,3,4].map(i=>({id:mx+i,name:'Día '+i,ex:[]}))});
+    o.active=pid;
+    const used=new Set(Object.values(o.logs).flatMap(l=>(l.entries||[]).map(e=>e.ex)));
+    const inPlan=new Set(o.plans.flatMap(p=>p.days.flatMap(d=>d.ex)));
+    o.exercises=o.exercises.filter(e=>!(e.id==='e_fondos_en_paralelas' && !used.has(e.id) && !inPlan.has(e.id)));
+    for(const [name,group] of LIB_NUEVA){
+      if(!o.exercises.some(e=>e.name.toLowerCase()===name.toLowerCase())) o.exercises.push({id:slugId(name),name,group});
+    }
+    o.v=2;
+  }
+  return o;
+}
+S = migrate(load() || clone(SEED)); save();
 
 /*  ---------- helpers ---------- */
 const $ = (s,el=document)=>el.querySelector(s);
@@ -309,8 +329,15 @@ const addDays = (s,k)=>{const d=parseISO(s);d.setDate(d.getDate()+k);return iso(
 const mondayOf = s=>{const d=parseISO(s);d.setDate(d.getDate()-((d.getDay()+6)%7));return iso(d);};
 const exById = id=>S.exercises.find(e=>e.id===id);
 const exName = id=>exById(id)?.name || 'Ejercicio eliminado';
-const dayIdx = id=>S.plan.days.findIndex(d=>d.id===id);
-const dayName = id=>S.plan.days.find(d=>d.id===id)?.name;
+const plan = ()=>S.plans.find(p=>p.id===S.active)||S.plans[0];
+const viewPlan = ()=>S.plans.find(p=>p.id===UI.planEdit)||plan();
+const allDays = ()=>S.plans.flatMap(p=>p.days);
+const findDay = id=>allDays().find(d=>d.id===id);
+const planOfDay = id=>S.plans.find(p=>p.days.some(d=>d.id===id));
+const dayIdx = id=>{ const p=planOfDay(id); return p?p.days.findIndex(d=>d.id===id):-1; };
+const dayName = id=>findDay(id)?.name;
+const dayTag = id=>{ const p=planOfDay(id); if(!p) return ''; return (S.plans.length>1?`P${S.plans.indexOf(p)+1}·`:'')+`D${dayIdx(id)+1}`; };
+const dayLabel = id=>{ const p=planOfDay(id), d=findDay(id); if(!d) return ''; return S.plans.length>1?`${p.name} · ${d.name}`:d.name; };
 const ICO_CHEV = '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>';
 
 const entryVol = e=>e.rows.reduce((a,r)=>a+(+r.s||0)*(+r.r||0),0);
@@ -354,16 +381,16 @@ function monthStats(ym){
   return {days,elapsed,went,missed,unmarked:Math.max(0,elapsed-went-missed),vol,ton,prs,perWeek: elapsed? went/(elapsed/7):0};
 }
 function suggestedDay(){
-  const ds=S.plan.days; if(!ds.length) return null;
-  const dates=Object.keys(S.logs).filter(d=>d<TODAY && S.logs[d].planDay && dayIdx(S.logs[d].planDay)>=0).sort();
+  const ds=plan().days; if(!ds.length) return null;
+  const dates=Object.keys(S.logs).filter(d=>d<TODAY && S.logs[d].planDay && ds.some(x=>x.id===S.logs[d].planDay)).sort();
   if(!dates.length) return ds[0];
-  const i=dayIdx(S.logs[dates[dates.length-1]].planDay);
+  const i=ds.findIndex(x=>x.id===S.logs[dates[dates.length-1]].planDay);
   return ds[(i+1)%ds.length];
 }
 
 /*  ---------- estado de UI ---------- */
 const UI={tab:'cal',month:TODAY.slice(0,7),layer:null,picker:false,pickQ:'',q:'',newEx:false,open:{'Piernas':true},openP:{},
-  progEx:null,progMetric:'weight',volMode:'vol',planDay:null,confirm:null,exMetric:'weight'};
+  progEx:null,progMetric:'weight',volMode:'vol',planDay:null,planEdit:null,sheetPlan:null,confirm:null,exMetric:'weight'};
 const TABS={calendario:'cal',ejercicios:'ex',progreso:'prog',plan:'plan'};
 const TAB_HASH=Object.fromEntries(Object.entries(TABS).map(([k,v])=>[v,k]));
 function readHash(){ const h=(location.hash||'').slice(1); if(TABS[h]) UI.tab=TABS[h]; }
@@ -448,11 +475,11 @@ function calView(){
     const cls=['cell']; if(key===TODAY) cls.push('today'); if(key>TODAY) cls.push('future'); if(s==='went') cls.push('went'); if(s==='missed') cls.push('missed');
     const di = l?.planDay ? dayIdx(l.planDay) : -1;
     const aria=`${d} de ${monthName(UI.month).split(' ')[0].toLowerCase()}: ${s==='went'?'fui':s==='missed'?'no fui':'sin marcar'}`;
-    cells+=`<button class="${cls.join(' ')}" data-act="open-day" data-date="${key}" aria-label="${aria}"><span class="n">${d}</span>${s==='went'?'<span class="mk">✓</span>':s==='missed'?'<span class="mk">✕</span>':''}${s==='went'&&di>=0?`<span class="pd">D${di+1}</span>`:''}</button>`;
+    cells+=`<button class="${cls.join(' ')}" data-act="open-day" data-date="${key}" aria-label="${aria}"><span class="n">${d}</span>${s==='went'?'<span class="mk">✓</span>':s==='missed'?'<span class="mk">✕</span>':''}${s==='went'&&di>=0?`<span class="pd">${dayTag(l.planDay)}</span>`:''}</button>`;
   }
   const recent=Object.keys(S.logs).filter(d=>S.logs[d].status==='went').sort().reverse().slice(0,6).map(d=>{
     const l=S.logs[d], di=l.planDay?dayIdx(l.planDay):-1, names=(l.entries||[]).map(e=>exName(e.ex));
-    return `<button class="rec" data-act="open-day" data-date="${d}"><div class="d">${shortDate(d)}<small>${cap(new Intl.DateTimeFormat('es-AR',{weekday:'short'}).format(parseISO(d)).replace('.',''))}${di>=0?` · D${di+1}`:''}</small></div>
+    return `<button class="rec" data-act="open-day" data-date="${d}"><div class="d">${shortDate(d)}<small>${cap(new Intl.DateTimeFormat('es-AR',{weekday:'short'}).format(parseISO(d)).replace('.',''))}${di>=0?` · ${dayTag(l.planDay)}`:''}</small></div>
       <div class="t">${names.length?esc(names.join(' · ')):'Sin ejercicios cargados'}</div><span class="tag">${names.length} ej.</span></button>`;
   }).join('');
   return `<div class="cal-layout">
@@ -475,14 +502,14 @@ function todayCard(){
   let body='';
   if(l?.status==='went'){
     const di=l.planDay?dayIdx(l.planDay):-1;
-    body=`<div class="next"><span class="eyebrow">Hoy · registrado</span><div class="lift">${di>=0?esc(dayName(l.planDay))+' · ':''}${(l.entries||[]).length} ejercicios cargados</div></div>
+    body=`<div class="next"><span class="eyebrow">Hoy · registrado</span><div class="lift">${di>=0?esc(dayLabel(l.planDay))+' · ':''}${(l.entries||[]).length} ejercicios cargados</div></div>
       <div class="btn-row"><button class="btn primary" data-act="open-day" data-date="${TODAY}">Abrir el registro de hoy</button></div>`;
   } else if(l?.status==='missed'){
     body=`<div class="next"><span class="eyebrow">Hoy · no fui</span><div class="lift">Marcado como día de descanso.</div></div>
       <div class="btn-row"><button class="btn" data-act="open-day" data-date="${TODAY}">Cambiar</button>${sd?`<button class="btn primary" data-act="start-today">Entrenar igual</button>`:''}</div>`;
   } else {
     const names = sd ? sd.ex.slice(0,4).map(exName).join(' · ') : '';
-    body=`<div class="next"><span class="eyebrow">Te toca</span><h2>${sd?esc(sd.name):'Entrenamiento libre'}</h2><div class="lift">${esc(names)||'Armá tu plan en la pestaña Plan.'}</div></div>
+    body=`<div class="next"><span class="eyebrow">Te toca${S.plans.length>1?' · '+esc(plan().name):''}</span><h2>${sd?esc(sd.name):'Entrenamiento libre'}</h2><div class="lift">${esc(names)||'Armá tu plan en la pestaña Plan.'}</div></div>
       <div class="btn-row"><button class="btn primary" data-act="start-today">Empezar entreno</button><button class="btn" data-act="skip-today">Hoy no voy</button></div>`;
   }
   return `<section class="card today"><span class="sub">${longDate(TODAY)}</span>${body}</section>`;
@@ -490,7 +517,7 @@ function todayCard(){
 
 /*  ---------- vista: ejercicios ---------- */
 function exView(){
-  return `<div class="sec-head"><h2 class="h2">Ejercicios</h2><button class="btn" data-act="toggle-newex">${UI.newEx?'Cancelar':'+ Nuevo ejercicio'}</button></div>
+  return `<div class="sec-head"><h2 class="h2">Ejercicios</h2><button class="btn primary" data-act="toggle-newex">${UI.newEx?'Cancelar':'+ Nuevo ejercicio'}</button></div>
   ${UI.newEx?newExForm():''}
   <input id="exSearch" type="text" placeholder="Buscar ejercicio…" value="${esc(UI.q)}" aria-label="Buscar ejercicio" autocomplete="off">
   <div id="exList" style="display:flex;flex-direction:column;gap:10px">${exList()}</div>`;
@@ -573,31 +600,43 @@ function exChart(exId,metric,key){
 
 /*  ---------- vista: plan ---------- */
 function planView(){
-  const ds=S.plan.days; if(!ds.find(d=>d.id===UI.planDay)) UI.planDay=ds[0]?.id;
+  const vp=viewPlan(); UI.planEdit=vp.id;
+  const ds=vp.days; if(!ds.find(d=>d.id===UI.planDay)) UI.planDay=ds[0]?.id;
   const day=ds.find(d=>d.id===UI.planDay);
+  const isActive=vp.id===S.active;
+  const plansBar=`<div class="seg" role="group" aria-label="Planes" style="overflow-x:auto">${S.plans.map(p=>`<button data-act="plan-select" data-id="${p.id}" aria-pressed="${p.id===vp.id}" style="white-space:nowrap">${esc(p.name)}${p.id===S.active?' ●':''}</button>`).join('')}</div>`;
   const tabs=ds.map(d=>`<button class="dayb" data-act="plan-day" data-id="${d.id}" aria-pressed="${d.id===UI.planDay}"><b>${esc(d.name)}</b><span>${d.ex.length} ejercicios</span></button>`).join('');
-  return `<div class="sec-head"><h2 class="h2">Plan</h2><button class="btn" data-act="plan-add-day">+ Agregar día</button></div>
+  return `<div class="sec-head"><h2 class="h2">Plan</h2><button class="btn" data-act="plan-new">+ Nuevo plan</button></div>
+  ${plansBar}
+  <section class="card flat two sp" style="align-items:end"><div><label class="field-l" for="planTitle">Nombre del plan</label><input id="planTitle" type="text" value="${esc(vp.name)}" autocomplete="off"></div>
+    <div class="btn-row">${isActive?'<span class="badge" style="align-self:center;padding:7px 12px">● Plan actual</span>':'<button class="btn primary" data-act="plan-activate">Usar este plan ahora</button>'}<button class="btn" data-act="plan-dup">Duplicar</button></div></section>
+  <div class="sec-head"><span class="eyebrow">Días de ${esc(vp.name)}</span><button class="btn" data-act="plan-add-day">+ Agregar día</button></div>
   <div class="days" role="group" aria-label="Días del plan">${tabs}</div>
   ${day?`<section class="card"><label class="field-l" for="planName">Nombre del día</label>
     <input id="planName" type="text" value="${esc(day.name)}" autocomplete="off">
     <div class="sec-head" style="margin:16px 0 4px"><span class="eyebrow">En este día · ${day.ex.length}</span></div>
     <div class="plist">${day.ex.length?day.ex.map((id,i)=>`<div class="prw"><div class="nm">${esc(exName(id))}<small>${esc(exById(id)?.group||'')}</small></div>
-      <div class="acts"><button class="icon-btn sm" data-act="plan-up" data-ex="${id}" aria-label="Subir"${i===0?' disabled':''}>↑</button><button class="icon-btn sm" data-act="plan-down" data-ex="${id}" aria-label="Bajar"${i===day.ex.length-1?' disabled':''}>↓</button><button class="icon-btn sm" data-act="plan-toggle" data-ex="${id}" aria-label="Quitar del día">×</button></div></div>`).join(''):`<div class="empty-state"><b>Día vacío</b>Elegí ejercicios de la lista de abajo.</div>`}</div>
+      <div class="acts"><button class="icon-btn sm" data-act="plan-up" data-ex="${id}" aria-label="Subir"${i===0?' disabled':''}>↑</button><button class="icon-btn sm" data-act="plan-down" data-ex="${id}" aria-label="Bajar"${i===day.ex.length-1?' disabled':''}>↓</button><button class="icon-btn sm" data-act="plan-toggle" data-ex="${id}" aria-label="Quitar del día">×</button></div></div>`).join(''):`<div class="empty-state"><b>Día vacío</b>Elegí ejercicios de la lista de abajo o creá uno nuevo.</div>`}</div>
     ${ds.length>1?`<div style="margin-top:12px">${UI.confirm==='delday'?`<div class="row-gap"><button class="btn danger" data-act="plan-del-day-ok">Sí, eliminar ${esc(day.name)}</button><button class="btn" data-act="cancel-confirm">Cancelar</button></div>`:`<button class="link" data-act="plan-del-day">Eliminar este día</button>`}</div>`:''}
   </section>
   <section><div class="sec-head" style="margin-bottom:10px"><span class="eyebrow">Elegí ejercicios para ${esc(day.name)}</span></div>
     <input id="planSearch" type="text" placeholder="Buscar ejercicio…" aria-label="Buscar ejercicio" autocomplete="off" style="margin-bottom:10px">
-    <div id="planList" style="display:flex;flex-direction:column;gap:10px">${planList('')}</div></section>`:''}`;
+    <div id="planList" style="display:flex;flex-direction:column;gap:10px">${planList('')}</div></section>
+  <form class="card flat two" data-form="planex"><span class="eyebrow">¿No está en la lista? Escribilo y se agrega a ${esc(day.name)}</span>
+    <input id="pxName" type="text" placeholder="Nombre del ejercicio" autocomplete="off" aria-label="Nombre del ejercicio">
+    <select id="pxGroup" aria-label="Grupo">${GROUPS.map(g=>`<option>${g}</option>`).join('')}</select>
+    <button class="btn primary" type="submit">Crear y agregar</button></form>`:''}
+  ${S.plans.length>1?`<div>${UI.confirm==='delplan'?`<div class="row-gap"><button class="btn danger" data-act="plan-del-ok">Sí, eliminar ${esc(vp.name)}</button><button class="btn" data-act="cancel-confirm">Cancelar</button></div>`:`<button class="link" data-act="plan-del" style="color:var(--missed-fg)">Eliminar ${esc(vp.name)}</button>`}</div>`:''}`;
 }
 function planList(q){
-  const day=S.plan.days.find(d=>d.id===UI.planDay); if(!day) return '';
+  const vp=viewPlan(); const day=vp.days.find(d=>d.id===UI.planDay); if(!day) return '';
   q=q.trim().toLowerCase(); let out='';
   for(const g of GROUPS){
     const list=S.exercises.filter(e=>e.group===g && (!q||e.name.toLowerCase().includes(q))); if(!list.length) continue;
     const sel=list.filter(e=>day.ex.includes(e.id)).length;
     out+=`<details class="grp" data-pg="${esc(g)}"${(q||UI.openP[g])?' open':''}><summary><span class="gn">${g}</span><span class="gc">${sel?`<span class="badge">${sel}</span>`:''}${list.length} ${ICO_CHEV}</span></summary><div class="items">${
       list.map(e=>{
-        const on=day.ex.includes(e.id); const also=S.plan.days.filter(d=>d.id!==day.id && d.ex.includes(e.id)).map(d=>d.name);
+        const on=day.ex.includes(e.id); const also=vp.days.filter(d=>d.id!==day.id && d.ex.includes(e.id)).map(d=>d.name);
         return `<button class="pick" data-act="plan-toggle" data-ex="${e.id}" aria-pressed="${on}"><span class="box">${on?'✓':''}</span><span class="nm" style="font-weight:600">${esc(e.name)}</span><span class="also">${also.length?esc(also.join(', ')):''}</span></button>`;
       }).join('')}</div></details>`;
   }
@@ -627,11 +666,12 @@ function closeLayer(){
   if(UI.layer?.type==='day'){ const l=S.logs[UI.layer.date]; if(l && !l.status && !(l.entries||[]).length && !l.note) { delete S.logs[UI.layer.date]; save(); } }
   UI.layer=null; UI.picker=false; UI.pickQ=''; renderLayer(); render();
 }
-function openDay(date){ UI.layer={type:'day',date}; UI.picker=false; renderLayer(); }
+function openDay(date){ UI.layer={type:'day',date}; UI.picker=false; UI.sheetPlan=null; renderLayer(); }
 
 function dayHTML(date){
   const l=S.logs[date]||{status:null,planDay:null,entries:[],note:''};
-  const ds=S.plan.days; const pd=ds.find(d=>d.id===l.planDay);
+  const pd=l.planDay?findDay(l.planDay):null; const sp=S.plans.find(p=>p.id===UI.sheetPlan)||(l.planDay&&planOfDay(l.planDay))||plan(); const ds=sp.days;
+  const planSeg=S.plans.length>1?`<div class="seg" role="group" aria-label="Plan" style="margin-bottom:10px">${S.plans.map(p=>`<button data-act="sheet-plan" data-id="${p.id}" aria-pressed="${p.id===sp.id}">${esc(p.name)}</button>`).join('')}</div>`:'';
   const missing = pd ? pd.ex.filter(id=>!(l.entries||[]).some(e=>e.ex===id)) : [];
   const entries = (l.entries||[]).map((e,i)=>entryHTML(e,i,date)).join('');
   return `<div class="sheet-h"><div><span class="eyebrow">Registro del día</span><h2>${longDate(date)}</h2></div><button class="icon-btn" data-act="close" aria-label="Cerrar">×</button></div>
@@ -640,7 +680,7 @@ function dayHTML(date){
     <button class="missed" data-act="status" data-s="missed" aria-pressed="${l.status==='missed'}">No fui</button>
     <button data-act="status" data-s="" aria-pressed="${!l.status}">Sin marcar</button></div>
   ${l.status==='missed'?`<div class="empty-state">Día marcado como descanso. Si al final entrenaste, tocá “Fui”.</div>`:`
-  <div><span class="field-l">Día del plan</span><div class="chips">${ds.map(d=>`<button class="chip" data-act="set-planday" data-id="${d.id}" aria-pressed="${l.planDay===d.id}">${esc(d.name)}</button>`).join('')}</div>
+  <div><span class="field-l">Día del plan</span>${planSeg}<div class="chips">${ds.map(d=>`<button class="chip" data-act="set-planday" data-id="${d.id}" aria-pressed="${l.planDay===d.id}">${esc(d.name)}</button>`).join('')}</div>
     ${missing.length?`<button class="link" data-act="load-missing" style="margin-top:6px">Agregar los ${missing.length} que faltan de ${esc(pd.name)}</button>`:''}</div>
   <div style="display:flex;flex-direction:column;gap:12px" id="entries">${entries||`<div class="empty-state"><b>Sin ejercicios</b>Elegí un día del plan para cargar la rutina, o agregá ejercicios sueltos.</div>`}</div>
   <button class="btn block" data-act="open-picker">+ Agregar ejercicio</button>
@@ -686,7 +726,7 @@ function pickListHTML(l,q){
 
 function exModalHTML(id){
   const ex=exById(id); if(!ex) return '';
-  const h=getHist(id); const inPlan=S.plan.days.filter(d=>d.ex.includes(id)).map(d=>d.name);
+  const h=getHist(id); const inPlan=allDays().filter(d=>d.ex.includes(id)).map(d=>dayLabel(d.id));
   const hist=[...h].reverse().map(x=>`<div><span>${shortDate(x.date)}<small>${x.date.slice(0,4)}</small></span><span>${esc(rowsText(x.e))}${x.e.note?`<small>${esc(x.e.note)}</small>`:''}</span></div>`).join('');
   const hasKg=h.some(x=>x.kg>0);
   return `<div class="sheet-h"><div><span class="eyebrow">${esc(ex.group)}</span><h2>${esc(ex.name)}</h2></div><button class="icon-btn" data-act="close" aria-label="Cerrar">×</button></div>
@@ -708,13 +748,13 @@ function dataHTML(){
 
 /*  ---------- acciones ---------- */
 function loadPlan(date,dayId,onlyMissing){
-  const l=ensureLog(date), d=S.plan.days.find(x=>x.id===dayId); if(!d) return 0; let n=0;
+  const l=ensureLog(date), d=findDay(dayId); if(!d) return 0; let n=0;
   for(const id of d.ex){ if(!exById(id)) continue; if(l.entries.some(e=>e.ex===id)) continue; l.entries.push({ex:id,rows:defaultRows(id,date),note:''}); n++; }
   return n;
 }
 function entryRef(t){ const card=t.closest('.entry'); if(!card) return null; const l=S.logs[UI.layer.date]; const i=+card.dataset.i; return {card,l,e:l.entries[i],i}; }
 function refreshFoot(card,e){ $('footer',card).innerHTML=footHTML(e); }
-function planMove(id,k){ const day=S.plan.days.find(d=>d.id===UI.planDay); const i=day.ex.indexOf(id); const j=i+k; if(j<0||j>=day.ex.length) return; [day.ex[i],day.ex[j]]=[day.ex[j],day.ex[i]]; }
+function planMove(id,k){ const day=viewPlan().days.find(d=>d.id===UI.planDay); const i=day.ex.indexOf(id); const j=i+k; if(j<0||j>=day.ex.length) return; [day.ex[i],day.ex[j]]=[day.ex[j],day.ex[i]]; }
 
 document.addEventListener('click',e=>{
   const ov=e.target.closest('[data-overlay]');
@@ -746,17 +786,26 @@ document.addEventListener('click',e=>{
     case 'open-ex': UI.layer={type:'ex',id:t.dataset.ex}; UI.confirm=null; renderLayer(); break;
     case 'exmetric': UI.exMetric=t.dataset.m; renderLayer(true); break;
     case 'del-ex': UI.confirm='delex'; renderLayer(true); break;
-    case 'del-ex-ok': { const id=UI.layer.id; S.exercises=S.exercises.filter(x=>x.id!==id); S.plan.days.forEach(d=>d.ex=d.ex.filter(x=>x!==id)); save(); UI.confirm=null; closeLayer(); toast('Ejercicio eliminado'); break; }
+    case 'del-ex-ok': { const id=UI.layer.id; S.exercises=S.exercises.filter(x=>x.id!==id); allDays().forEach(d=>d.ex=d.ex.filter(x=>x!==id)); save(); UI.confirm=null; closeLayer(); toast('Ejercicio eliminado'); break; }
     case 'cancel-confirm': UI.confirm=null; if(UI.layer) renderLayer(true); else render(); break;
     case 'toggle-newex': UI.newEx=!UI.newEx; render(); if(UI.newEx) $('#nxName')?.focus(); break;
     case 'volmode': UI.volMode=t.dataset.m; render(); break;
     case 'progmetric': UI.progMetric=t.dataset.m; render(); break;
     case 'pick-prog': UI.progEx=t.dataset.ex; render(); $('#progEx')?.scrollIntoView({block:'center',behavior:'smooth'}); break;
+    case 'sheet-plan': UI.sheetPlan=+t.dataset.id; renderLayer(true); break;
+    case 'plan-select': UI.planEdit=+t.dataset.id; UI.planDay=null; UI.confirm=null; render(); break;
+    case 'plan-activate': S.active=viewPlan().id; save(); render(); toast(viewPlan().name+' es tu plan actual'); break;
+    case 'plan-new': { const id=Math.max(0,...S.plans.map(p=>p.id))+1; let mx=Math.max(0,...allDays().map(d=>d.id));
+      S.plans.push({id,name:'Plan '+(S.plans.length+1),days:[1,2,3,4].map(i=>({id:++mx,name:'Día '+i,ex:[]}))}); UI.planEdit=id; UI.planDay=null; save(); render(); $('#planTitle')?.select(); break; }
+    case 'plan-dup': { const vp=viewPlan(); const id=Math.max(0,...S.plans.map(p=>p.id))+1; let mx=Math.max(0,...allDays().map(d=>d.id));
+      S.plans.push({id,name:vp.name+' (copia)',days:vp.days.map(d=>({id:++mx,name:d.name,ex:[...d.ex]}))}); UI.planEdit=id; UI.planDay=null; save(); render(); toast('Plan duplicado'); break; }
+    case 'plan-del': UI.confirm='delplan'; render(); break;
+    case 'plan-del-ok': { const vp=viewPlan(); S.plans=S.plans.filter(p=>p.id!==vp.id); if(S.active===vp.id) S.active=S.plans[0].id; UI.planEdit=S.active; UI.planDay=null; UI.confirm=null; save(); render(); toast('Plan eliminado'); break; }
     case 'plan-day': UI.planDay=+t.dataset.id; UI.confirm=null; render(); break;
-    case 'plan-add-day': { const ds=S.plan.days; const id=Math.max(0,...ds.map(d=>d.id))+1; ds.push({id,name:'Día '+(ds.length+1),ex:[]}); UI.planDay=id; save(); render(); $('#planName')?.select(); break; }
+    case 'plan-add-day': { const ds=viewPlan().days; const id=Math.max(0,...allDays().map(d=>d.id))+1; ds.push({id,name:'Día '+(ds.length+1),ex:[]}); UI.planDay=id; save(); render(); $('#planName')?.select(); break; }
     case 'plan-del-day': UI.confirm='delday'; render(); break;
-    case 'plan-del-day-ok': { S.plan.days=S.plan.days.filter(d=>d.id!==UI.planDay); UI.planDay=S.plan.days[0]?.id; UI.confirm=null; save(); render(); toast('Día eliminado'); break; }
-    case 'plan-toggle': { const day=S.plan.days.find(d=>d.id===UI.planDay); const id=t.dataset.ex; const i=day.ex.indexOf(id); if(i>=0) day.ex.splice(i,1); else day.ex.push(id); save();
+    case 'plan-del-day-ok': { const vp=viewPlan(); vp.days=vp.days.filter(d=>d.id!==UI.planDay); UI.planDay=vp.days[0]?.id; UI.confirm=null; save(); render(); toast('Día eliminado'); break; }
+    case 'plan-toggle': { const day=viewPlan().days.find(d=>d.id===UI.planDay); const id=t.dataset.ex; const i=day.ex.indexOf(id); if(i>=0) day.ex.splice(i,1); else day.ex.push(id); save();
       const sy=window.scrollY; render(); window.scrollTo(0,sy); break; }
     case 'plan-up': planMove(t.dataset.ex,-1); save(); { const sy=window.scrollY; render(); window.scrollTo(0,sy);} break;
     case 'plan-down': planMove(t.dataset.ex,1); save(); { const sy=window.scrollY; render(); window.scrollTo(0,sy);} break;
@@ -764,9 +813,9 @@ document.addEventListener('click',e=>{
     case 'copy-backup': { const ta=$('#backup'); ta.value=JSON.stringify(S);
       const fallback=()=>{ ta.focus(); ta.select(); toast('Seleccionado: copialo con Ctrl/Cmd+C'); };
       try{ navigator.clipboard.writeText(ta.value).then(()=>toast('Respaldo copiado'),fallback); }catch(err){ fallback(); } break; }
-    case 'restore': { try{ const o=JSON.parse($('#backup').value); if(!(o&&o.logs&&o.exercises&&o.plan&&o.plan.days)) throw 0; S=o; save(); UI.layer=null; renderLayer(); render(); toast('Datos restaurados'); }catch(err){ toast('El texto no es un respaldo válido'); } break; }
+    case 'restore': { try{ const o=JSON.parse($('#backup').value); if(!(o&&o.logs&&o.exercises&&(o.plans||(o.plan&&o.plan.days)))) throw 0; S=migrate(o); save(); UI.layer=null; renderLayer(); render(); toast('Datos restaurados'); }catch(err){ toast('El texto no es un respaldo válido'); } break; }
     case 'reset': UI.confirm='reset'; renderLayer(true); break;
-    case 'reset-ok': S=clone(SEED); save(); UI.confirm=null; UI.layer=null; renderLayer(); render(); toast('Datos originales cargados'); break;
+    case 'reset-ok': S=migrate(clone(SEED)); save(); UI.confirm=null; UI.layer=null; renderLayer(); render(); toast('Datos originales cargados'); break;
   }
 });
 
@@ -775,7 +824,8 @@ document.addEventListener('input',e=>{
   if(t.id==='exSearch'){ UI.q=t.value; $('#exList').innerHTML=exList(); return; }
   if(t.id==='planSearch'){ $('#planList').innerHTML=planList(t.value); return; }
   if(t.id==='pickSearch'){ UI.pickQ=t.value; $('#pickList').innerHTML=pickListHTML(ensureLog(UI.layer.date),t.value.trim().toLowerCase()); return; }
-  if(t.id==='planName'){ const d=S.plan.days.find(x=>x.id===UI.planDay); d.name=t.value||'Día'; save(); const b=$(`.dayb[data-id="${d.id}"] b`); if(b) b.textContent=d.name; return; }
+  if(t.id==='planTitle'){ const vp=viewPlan(); vp.name=t.value||'Plan'; save(); const b=$(`[data-act=plan-select][data-id="${vp.id}"]`); if(b) b.textContent=vp.name+(vp.id===S.active?' ●':''); return; }
+  if(t.id==='planName'){ const d=viewPlan().days.find(x=>x.id===UI.planDay); d.name=t.value||'Día'; save(); const b=$(`.dayb[data-id="${d.id}"] b`); if(b) b.textContent=d.name; return; }
   if(t.id==='dayNote'){ ensureLog(UI.layer.date).note=t.value; save(); return; }
   if(t.id==='edName'){ const x=exById(UI.layer.id); if(t.value.trim()){ x.name=t.value.trim(); save(); } return; }
   if(t.dataset.f && UI.layer?.type==='day'){
@@ -797,6 +847,8 @@ document.addEventListener('change',e=>{
 document.addEventListener('submit',e=>{
   e.preventDefault(); const f=e.target.dataset.form;
   if(f==='newex'){ const n=$('#nxName').value.trim(); if(!n) return $('#nxName').focus(); S.exercises.push({id:'e_'+Date.now().toString(36),name:n,group:$('#nxGroup').value}); UI.open[$('#nxGroup').value]=true; UI.newEx=false; UI.q=''; save(); render(); toast('Ejercicio creado'); }
+  if(f==='planex'){ const n=$('#pxName').value.trim(); if(!n) return $('#pxName').focus(); const id=slugId(n)+'_'+Date.now().toString(36);
+    S.exercises.push({id,name:n,group:$('#pxGroup').value}); const day=viewPlan().days.find(d=>d.id===UI.planDay); if(day) day.ex.push(id); UI.openP[$('#pxGroup').value]=true; save(); render(); toast('Ejercicio creado y agregado'); }
   if(f==='quickex'){ const n=$('#qxName').value.trim(); if(!n) return $('#qxName').focus(); const id='e_'+Date.now().toString(36);
     S.exercises.push({id,name:n,group:$('#qxGroup').value}); const l=ensureLog(UI.layer.date); l.entries.push({ex:id,rows:[{s:3,r:8,kg:0}],note:''}); if(!l.status) l.status='went'; save(); UI.picker=false; renderLayer(); toast('Ejercicio agregado'); }
 });
