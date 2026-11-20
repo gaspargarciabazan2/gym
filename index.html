@@ -691,6 +691,7 @@ function dayHTML(date){
   const pd=l.planDay?findDay(l.planDay):null; const sp=S.plans.find(p=>p.id===UI.sheetPlan)||(l.planDay&&planOfDay(l.planDay))||plan(); const ds=sp.days;
   const planSeg=S.plans.length>1?`<div class="seg" role="group" aria-label="Plan" style="margin-bottom:10px">${S.plans.map(p=>`<button data-act="sheet-plan" data-id="${p.id}" aria-pressed="${p.id===sp.id}">${esc(p.name)}</button>`).join('')}</div>`:'';
   const missing = pd ? pd.ex.filter(id=>!(l.entries||[]).some(e=>e.ex===id)) : [];
+  const extra = pd ? (l.entries||[]).filter(e=>!pd.ex.includes(e.ex)).length : 0;
   const entries = (l.entries||[]).map((e,i)=>entryHTML(e,i,date)).join('');
   return `<div class="sheet-h"><div><span class="eyebrow">Registro del día</span><h2>${longDate(date)}</h2></div><button class="icon-btn" data-act="close" aria-label="Cerrar">×</button></div>
   <div class="seg" role="group" aria-label="Asistencia">
@@ -699,6 +700,7 @@ function dayHTML(date){
     <button data-act="status" data-s="" aria-pressed="${!l.status}">Sin marcar</button></div>
   ${l.status==='missed'?`<div class="empty-state">Día marcado como descanso. Si al final entrenaste, tocá “Fui”.</div>`:`
   <div><span class="field-l">Día del plan</span>${planSeg}<div class="chips">${ds.map(d=>`<button class="chip" data-act="set-planday" data-id="${d.id}" aria-pressed="${l.planDay===d.id}">${esc(d.name)}</button>`).join('')}</div>
+    ${extra?(UI.confirm==='replace'?`<div class="row-gap" style="margin-top:8px;flex-wrap:wrap"><button class="btn danger" data-act="replace-plan-ok">Sí, reemplazar todo</button><button class="btn" data-act="cancel-confirm">Cancelar</button></div><div class="sub" style="margin-top:6px">Se borran los ejercicios cargados hoy y se carga la rutina de ${esc(pd.name)}.</div>`:`<button class="link" data-act="replace-plan" style="margin-top:6px;display:block">Hay ${extra} ejercicios que no son de ${esc(pd.name)}: reemplazar por su rutina</button>`):''}
     ${missing.length?`<button class="link" data-act="load-missing" style="margin-top:6px">Agregar los ${missing.length} que faltan de ${esc(pd.name)}</button>`:''}</div>
   <div style="display:flex;flex-direction:column;gap:12px" id="entries">${entries||`<div class="empty-state"><b>Sin ejercicios</b>Elegí un día del plan para cargar la rutina, o agregá ejercicios sueltos.</div>`}</div>
   <button class="btn block" data-act="open-picker">+ Agregar ejercicio</button>
@@ -767,7 +769,7 @@ function dataHTML(){
 /*  ---------- acciones ---------- */
 function loadPlan(date,dayId,onlyMissing){
   const l=ensureLog(date), d=findDay(dayId); if(!d) return 0; let n=0;
-  for(const id of d.ex){ if(!exById(id)) continue; if(l.entries.some(e=>e.ex===id)) continue; l.entries.push({ex:id,rows:defaultRows(id,date),note:''}); n++; }
+  for(const id of d.ex){ if(!exById(id)) continue; if(l.entries.some(e=>e.ex===id)) continue; l.entries.push({ex:id,rows:defaultRows(id,date),note:'',auto:true}); n++; }
   return n;
 }
 function entryRef(t){ const card=t.closest('.entry'); if(!card) return null; const l=S.logs[UI.layer.date]; const i=+card.dataset.i; return {card,l,e:l.entries[i],i}; }
@@ -788,7 +790,10 @@ document.addEventListener('click',e=>{
     case 'skip-today': { ensureLog(TODAY).status='missed'; save(); render(); toast('Hoy marcado como no fui'); break; }
     case 'close': closeLayer(); break;
     case 'status': { const l=ensureLog(UI.layer.date); l.status=t.dataset.s||null; save(); renderLayer(true); break; }
-    case 'set-planday': { const l=ensureLog(UI.layer.date); const id=+t.dataset.id; if(l.planDay===id){ l.planDay=null; } else { l.planDay=id; if(!l.entries.length){ loadPlan(UI.layer.date,id); } if(!l.status) l.status='went'; } save(); renderLayer(true); break; }
+    case 'set-planday': { const l=ensureLog(UI.layer.date); const id=+t.dataset.id; l.entries=l.entries.filter(e=>!e.auto);
+      if(l.planDay===id){ l.planDay=null; } else { l.planDay=id; loadPlan(UI.layer.date,id); if(!l.status) l.status='went'; } UI.confirm=null; save(); renderLayer(true); break; }
+    case 'replace-plan': UI.confirm='replace'; renderLayer(true); break;
+    case 'replace-plan-ok': { const l=ensureLog(UI.layer.date); l.entries=[]; loadPlan(UI.layer.date,l.planDay); UI.confirm=null; save(); renderLayer(true); toast('Rutina cargada'); break; }
     case 'load-missing': { const l=ensureLog(UI.layer.date); const n=loadPlan(UI.layer.date,l.planDay); save(); renderLayer(true); toast(n+' ejercicios agregados'); break; }
     case 'open-picker': ensureLog(UI.layer.date); UI.picker=true; renderLayer(); break;
     case 'close-picker': UI.picker=false; renderLayer(); break;
@@ -796,10 +801,10 @@ document.addEventListener('click',e=>{
       if(i>=0) l.entries.splice(i,1); else { l.entries.push({ex:id,rows:defaultRows(id,UI.layer.date),note:''}); if(!l.status) l.status='went'; }
       save(); renderLayer(true); break; }
     case 'rm-entry': { const r=entryRef(t); r.l.entries.splice(r.i,1); save(); renderLayer(true); break; }
-    case 'add-row': { const r=entryRef(t); const lr=r.e.rows[r.e.rows.length-1]; r.e.rows.push({s:lr.s||3,r:lr.r||8,kg:lr.kg||0}); save(); renderLayer(true); break; }
-    case 'rm-row': { const r=entryRef(t); const ri=+t.closest('.rw').dataset.ri; r.e.rows.splice(ri,1); save(); renderLayer(true); break; }
+    case 'add-row': { const r=entryRef(t); r.e.auto=false; const lr=r.e.rows[r.e.rows.length-1]; r.e.rows.push({s:lr.s||3,r:lr.r||8,kg:lr.kg||0}); save(); renderLayer(true); break; }
+    case 'rm-row': { const r=entryRef(t); r.e.auto=false; const ri=+t.closest('.rw').dataset.ri; r.e.rows.splice(ri,1); save(); renderLayer(true); break; }
     case 'kg': { const r=entryRef(t); const rw=t.closest('.rw'); const row=r.e.rows[+rw.dataset.ri];
-      row.kg=Math.max(0,Math.round(((+row.kg||0)+ +t.dataset.d)*100)/100); $('[data-f=kg]',rw).value=row.kg?fmtIn(row.kg):''; refreshFoot(r.card,r.e);
+      r.e.auto=false; row.kg=Math.max(0,Math.round(((+row.kg||0)+ +t.dataset.d)*100)/100); $('[data-f=kg]',rw).value=row.kg?fmtIn(row.kg):''; refreshFoot(r.card,r.e);
       const l=r.l; if(l.status!=='went'){ l.status='went'; } save(); break; }
     case 'open-ex': UI.layer={type:'ex',id:t.dataset.ex}; UI.confirm=null; renderLayer(); break;
     case 'exmetric': UI.exMetric=t.dataset.m; renderLayer(true); break;
@@ -848,9 +853,9 @@ document.addEventListener('input',e=>{
   if(t.id==='edName'){ const x=exById(UI.layer.id); if(t.value.trim()){ x.name=t.value.trim(); save(); } return; }
   if(t.dataset.f && UI.layer?.type==='day'){
     const r=entryRef(t); if(!r) return; const f=t.dataset.f;
-    if(f==='note'){ r.e.note=t.value; } else {
+    if(f==='note'){ r.e.note=t.value; r.e.auto=false; } else {
       const row=r.e.rows[+t.closest('.rw').dataset.ri];
-      row[f] = f==='kg' ? pn(t.value) : (parseInt(t.value,10)||0);
+      row[f] = f==='kg' ? pn(t.value) : (parseInt(t.value,10)||0); r.e.auto=false;
       refreshFoot(r.card,r.e);
     }
     if(r.l.status!=='went'){ r.l.status='went'; }
