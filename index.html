@@ -286,6 +286,11 @@ function load(){ try{ const r=localStorage.getItem(KEY); if(r){ const o=JSON.par
 function save(){ try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} }
 const clone = o => JSON.parse(JSON.stringify(o));
 const LIB_NUEVA=[['Fondos','Tríceps'],['Clean squat','Piernas'],['Sentadilla con pausa','Piernas'],['Remo caballo','Espalda'],['Dominada neutra','Espalda'],['Bench inclinado cerrado','Pecho']];
+const PLAN2_DEF=[
+  ['Clean squat','Press Mancuerna Plano','Dominadas','Bulgaras','Francés tríceps','Face pull'],
+  ['Sentadilla','Bench inclinado cerrado','Rumano con barra','Vuelos laterales inclinado','Remo seal banco'],
+  ['BP Plano','Sentadilla entre cajones','Dominada neutra','Hip Thrust','Bíceps W'],
+  ['Deadlift','Press Militar barra','Sentadilla con pausa','Remo caballo','Fondos']];
 function slugId(n){ return 'e_'+n.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,''); }
 function migrate(o){
   if(o.plan && !o.plans){ o.plans=[{id:1,name:'Plan 1',days:o.plan.days}]; o.active=1; }
@@ -302,6 +307,19 @@ function migrate(o){
       if(!o.exercises.some(e=>e.name.toLowerCase()===name.toLowerCase())) o.exercises.push({id:slugId(name),name,group});
     }
     o.v=2;
+  }
+  if(o.v<3){
+    for(const [name,group] of [['Vuelos laterales inclinado','Hombros'],['Sentadilla entre cajones','Piernas']]){
+      if(!o.exercises.some(e=>e.name.toLowerCase()===name.toLowerCase())) o.exercises.push({id:slugId(name),name,group});
+    }
+    const p2=o.plans.find(p=>p.name==='Plan 2');
+    if(p2 && p2.days.every(d=>!d.ex.length)){
+      PLAN2_DEF.forEach((names,i)=>{
+        if(!p2.days[i]){ const mx=Math.max(0,...o.plans.flatMap(p=>p.days.map(d=>d.id))); p2.days[i]={id:mx+1,name:'Día '+(i+1),ex:[]}; }
+        p2.days[i].ex=names.map(n=>o.exercises.find(e=>e.name.toLowerCase()===n.toLowerCase())?.id).filter(Boolean);
+      });
+    }
+    o.v=3;
   }
   return o;
 }
